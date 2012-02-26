@@ -1,0 +1,17 @@
+High Priority
+-------------
+POST variable parsing
+Basic sandboxed database support (e.g. GET/PUT)
+Sandboxed dofile() / loadfile() / loadstring()
+
+
+Medium Priority
+---------------
+File Upload Support
+Database error logging
+Consider switching to mmap() for file reads
+
+
+Low Priority
+------------
+Database file adapter
