@@ -25,12 +25,12 @@ static char *http_status_strings[] = {
 
 
 #define senderror(status_code,error_string) \
-	if(!response.committed){ \
+	if(!state.committed){ \
 			FCGX_FPrintF(request.out, "Status: %d %s\r\n", status_code, http_status_strings[status_code]); \
 			FCGX_FPrintF(request.out, "Content-Type: %s\r\n\r\n", config->content_type); \
-			response.committed = 1; \
+			state.committed = 1; \
 	} \
-	FCGX_PutS(error_string, response.out);
+	FCGX_PutS(error_string, state.response);
 
 
 #ifdef DEBUG
@@ -64,7 +64,7 @@ void *thread_run(void *arg)
 	LF_params *params = arg;
 	LF_config *config = params->config;
 	LF_limits *limits = LF_newlimits();
-	LF_response response;
+	LF_state state;
 	lua_State *l;
 
 	FCGX_Request request;
@@ -86,31 +86,43 @@ void *thread_run(void *arg)
 
 		#ifdef DEBUG
 		printvars(&request);
+		struct timespec rstart, rend;
+		clock_gettime(CLOCK_MONOTONIC, &rstart);
 		#endif
 
-		LF_parserequest(l, &request, &response);
+		LF_parserequest(l, &request, &state);
+
+		#ifdef DEBUG
+		clock_gettime(CLOCK_MONOTONIC, &rend);
+		// Assumes the request returns in less than a second (which it should)
+		printf("Request parsed in %luns\n", (rend.tv_nsec-rstart.tv_nsec));
+		#endif
+
 		LF_enablelimits(l, limits);
 
-		switch(LF_loadfile(l)){
+		switch(LF_loadscript(l)){
 			case 0:
 				if(lua_pcall(l, 0, 0, 0)){
-					senderror(500, lua_tostring(l, -1));
-				} else if(!response.committed){
+					if(lua_isstring(l, -1)){
+						senderror(500, lua_tostring(l, -1));
+					} else {
+						senderror(500, "unspecified lua error");
+					}
+				} else if(!state.committed){
 					senderror(200, "");
 				}
 			break;
 
-			case EACCES:
-				senderror(403, lua_tostring(l, -1));
+			case LF_ERRACCESS: senderror(403, "access denied"); break;
+			case LF_ERRMEMORY: senderror(500, "not enough memory"); break;
+			case LF_ERRNOTFOUND:
+				printf("404\n");
+				senderror(404, "no such file or directory");
 			break;
-
-			case ENOENT:
-				senderror(404, lua_tostring(l, -1));
-			break;
-
-			default:
-				senderror(500, lua_tostring(l, -1));
-			break;
+			case LF_ERRSYNTAX: senderror(500, lua_tostring(l, -1)); break;
+			case LF_ERRBYTECODE: senderror(403, "compiled bytecode not supported"); break;
+			case LF_ERRNOPATH: senderror(500, "SCRIPT_FILENAME not provided"); break;
+			case LF_ERRNONAME: senderror(500, "SCRIPT_NAME not provided"); break;
 		}
 
 		FCGX_Finish_r(&request);

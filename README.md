@@ -4,7 +4,7 @@ lua-fastcgi
 lua-fastcgi is a sandboxed Lua backend for FastCGI. That is, you can write
 Lua scripts that serve up web pages. Options exist in lua-fastcgi.lua
 to configure a fixed amount of memory, cpu usage, and output bytes
-for each request. While sandboxed, lua-fastcgi supports a limit set
+for each request. While sandboxed, lua-fastcgi supports a limited set
 of functions. If sandboxing is disabled, lua-fastcgi loads the standard
 libraries and users may load modules as needed.
 

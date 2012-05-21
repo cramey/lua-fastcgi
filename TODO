@@ -1,17 +1,17 @@
 High Priority
 -------------
-POST variable parsing
 Basic sandboxed database support (e.g. GET/PUT)
-Sandboxed dofile() / loadfile() / loadstring()
+Function for reading files into string
 
 
 Medium Priority
 ---------------
-File Upload Support
-Database error logging
-Consider switching to mmap() for file reads
+File upload support
+Logging of errors to database
 
 
 Low Priority
 ------------
 Database file adapter
+Session scoped variables
+Application scoped variables

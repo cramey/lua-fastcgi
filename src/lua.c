@@ -1,10 +1,13 @@
 #include <stdlib.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 
@@ -16,14 +19,6 @@
 
 #include "lua.h"
 #include "lfuncs.h"
-
-#define LF_BUFFERSIZE 4096
-
-typedef struct {
-	int fd;
-	char buffer[LF_BUFFERSIZE];
-	size_t total;
-} LF_loaderdata;
 
 
 #ifdef DEBUG
@@ -119,7 +114,6 @@ void LF_setlimits(LF_limits *limits, size_t memory, size_t output, uint32_t cpu_
 }
 
 
-
 void LF_enablelimits(lua_State *l, LF_limits *limits)
 {
 	if(limits->cpu.tv_usec > 0 || limits->cpu.tv_sec > 0){
@@ -142,7 +136,13 @@ void LF_enablelimits(lua_State *l, LF_limits *limits)
 		lua_rawset(l, LUA_REGISTRYINDEX);
 	}
 
-	if(limits->memory){ lua_setallocf(l, &LF_limit_alloc, &limits->memory); }
+	if(limits->memory){
+		lua_pushstring(l, "MEMORY_LIMIT");
+		lua_pushlightuserdata(l, &limits->memory);
+		lua_rawset(l, LUA_REGISTRYINDEX);
+
+		lua_setallocf(l, &LF_limit_alloc, &limits->memory);
+	}
 }
 
 
@@ -174,13 +174,16 @@ lua_State *LF_newstate(int sandbox, char *content_type)
 		lua_call(l, 1, 0);
 
 		// Nil out unsafe functions/objects
-		LF_nilglobal(l, "dofile");
 		LF_nilglobal(l, "load");
-		LF_nilglobal(l, "loadfile");
 		LF_nilglobal(l, "xpcall");
 		LF_nilglobal(l, "pcall");
 		LF_nilglobal(l, "module");
 		LF_nilglobal(l, "require");
+
+		// Override unsafe functions
+		lua_register(l, "loadstring", &LF_loadstring);
+		lua_register(l, "loadfile", &LF_loadfile);
+		lua_register(l, "dofile", &LF_dofile);
 	}
 
 	// Register the print function
@@ -202,7 +205,7 @@ lua_State *LF_newstate(int sandbox, char *content_type)
 
 
 // Set GET variables
-static void LF_parsequerystring(lua_State *l, char *query_string)
+static void LF_parsequerystring(lua_State *l, char *query_string, char *table)
 {
 	lua_newtable(l);
 
@@ -262,7 +265,7 @@ static void LF_parsequerystring(lua_State *l, char *query_string)
 				if(lua_gettop(l) == (stack+2)){ lua_rawset(l, stack); }
 
 				// Finally, set the table
-				lua_setglobal(l, "GET");
+				lua_setglobal(l, table);
 				return;
 			break;
 
@@ -275,8 +278,17 @@ static void LF_parsequerystring(lua_State *l, char *query_string)
 
 
 // Parses fastcgi request
-void LF_parserequest(lua_State *l, FCGX_Request *request, LF_response *response)
+void LF_parserequest(lua_State *l, FCGX_Request *request, LF_state *state)
 {
+	uintmax_t content_length = 0;
+	char *content_type = NULL;
+
+	state->committed = 0;
+	state->response = request->out;
+	lua_pushstring(l, "STATE");
+	lua_pushlightuserdata(l, state);
+	lua_rawset(l, LUA_REGISTRYINDEX);
+
 	lua_newtable(l);
 	for(char **p = request->envp; *p; ++p){
 		char *vptr = strchr(*p, '=');
@@ -285,77 +297,129 @@ void LF_parserequest(lua_State *l, FCGX_Request *request, LF_response *response)
 		lua_pushlstring(l, *p, keylen); // Push Key
 		lua_pushstring(l, (vptr+1)); // Push Value
 		lua_rawset(l, 1); // Set key/value into table
+		
+		switch(keylen){
+			case 11:
+				if(memcmp(*p, "SCRIPT_NAME", 11) == 0){
+					lua_pushstring(l, "SCRIPT_NAME");
+					lua_pushlightuserdata(l, (vptr+1));
+					lua_rawset(l, LUA_REGISTRYINDEX);
+				}
+			break;
 
-		if(keylen == 12 && memcmp(*p, "QUERY_STRING", 12) == 0){
-			LF_parsequerystring(l, (vptr+1));
+			case 12: 
+				if(memcmp(*p, "QUERY_STRING", 12) == 0){
+					LF_parsequerystring(l, (vptr+1), "GET");
+				} if(memcmp(*p, "CONTENT_TYPE", 12) == 0){
+					content_type = (vptr+1);
+				}
+			break;
+
+			case 13:
+				if(memcmp(*p, "DOCUMENT_ROOT", 13) == 0){
+					lua_pushstring(l, "DOCUMENT_ROOT");
+					lua_pushlightuserdata(l, (vptr+1));
+					lua_rawset(l, LUA_REGISTRYINDEX);
+				}
+			break;
+
+			case 14:
+				if(memcmp(*p, "CONTENT_LENGTH", 14) == 0){
+					content_length = strtoumax((vptr+1), NULL, 10);
+				}
+			break;
+
+			case 15:
+				if(memcmp(*p, "SCRIPT_FILENAME", 15) == 0){
+					lua_pushstring(l, "SCRIPT_FILENAME");
+					lua_pushlightuserdata(l, (vptr+1));
+					lua_rawset(l, LUA_REGISTRYINDEX);
+				}
+			break;
 		}
 	}
 	lua_setglobal(l, "REQUEST");
 
-	response->committed = 0;
-	response->out = request->out;
-	lua_pushstring(l, "RESPONSE");
-	lua_pushlightuserdata(l, response);
-	lua_rawset(l, LUA_REGISTRYINDEX);
-}
-
-
-static const char *LF_filereader(lua_State *l, void *data, size_t *size)
-{
-	LF_loaderdata *ld = data;
-
-	*size = read(ld->fd, ld->buffer, LF_BUFFERSIZE);
-
-	if(ld->total == 0 && *size > 3){
-		if(memcmp(ld->buffer, LUA_SIGNATURE, 4) == 0){
-			luaL_error(l, "Compiled bytecode not supported.");
-		}
-	}
-
-	switch(*size){
-		case 0: return NULL;
-		case -1: luaL_error(l, strerror(errno));
-		default:
-			ld->total += *size;
-			return ld->buffer;
+	if(content_length > 0 && content_type != NULL && memcmp(content_type, "application/x-www-form-urlencoded", 33) == 0){
+		char *content = lua_newuserdata(l, content_length+1);
+		int r = FCGX_GetStr(
+			content, (content_length > INT_MAX ? INT_MAX : content_length),
+			request->in
+		);
+		*(content + r) = 0; // Add NUL byte at end for proper string
+		LF_parsequerystring(l, content, "POST");
+		lua_pop(l, 1);
 	}
 }
 
 
-// Loads a lua file into a state
-int LF_loadfile(lua_State *l)
+// Load script by name and path
+int LF_fileload(lua_State *l, const char *name, char *scriptpath)
 {
-	lua_getglobal(l, "REQUEST");
-
-	int stack = lua_gettop(l);
-
-	lua_pushstring(l, "SCRIPT_FILENAME");
-	lua_rawget(l, stack);
-	const char *path = lua_tostring(l, stack+1);
-
-	lua_pushstring(l, "SCRIPT_NAME");
-	lua_rawget(l, stack);
-	const char *name = lua_tostring(l, stack+2);
-
-	LF_loaderdata ld;
-	ld.total = 0;
-	ld.fd = open(path, O_RDONLY);
-	if(ld.fd == -1){
-		lua_pushstring(l, strerror(errno));
-		return errno;
-	}
+	char *script = NULL;
+	int fd = -1, r = 0;
+	struct stat sb;
+	
+	if(scriptpath == NULL){ return LF_ERRNOPATH; }
+	if(name == NULL){ return LF_ERRNONAME; }
 
 	// Generate a string with an '=' followed by the script name
 	// this ensures lua will generation a reasonable error
-	size_t len = strlen(name) + 1;
-	char scriptname[len + 1];
+	size_t namelen = strlen(name);
+	char scriptname[namelen+2];
 	scriptname[0] = '=';
-	memcpy(&scriptname[1], name, len);
-	
-	int r = lua_load(l, &LF_filereader, &ld, scriptname);
+	memcpy(&scriptname[1], name, namelen+1);
 
-	close(ld.fd);
-	return (r == 0 ? 0 : ENOMSG);
+	if((fd = open(scriptpath, O_RDONLY)) == -1){ goto errorL; }
+	
+	if(fstat(fd, &sb) == -1){ goto errorL; }
+	
+	if((script = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0)) == NULL){
+		goto errorL;
+	}
+	
+	if(madvise(script, sb.st_size, MADV_SEQUENTIAL) == -1){ goto errorL; }
+	
+	if(sb.st_size > 3 && memcmp(script, LUA_SIGNATURE, 4) == 0){
+		r = LF_ERRBYTECODE;
+	} else {
+		switch(luaL_loadbuffer(l, script, sb.st_size, scriptname)){
+			case LUA_ERRSYNTAX: r = LF_ERRSYNTAX; break;
+			case LUA_ERRMEM: r = LF_ERRMEMORY; break;
+		}
+	}
+
+	if(script != NULL){ munmap(script, sb.st_size); }
+	if(fd != -1){ close(fd); }
+	return r;
+
+	errorL:
+	if(script != NULL){ munmap(script, sb.st_size); }
+	if(fd != -1){ close(fd); }
+	switch(errno){
+		case EACCES: return r = LF_ERRACCESS;
+		case ENOENT: return r = LF_ERRNOTFOUND;
+		case ENOMEM: return r = LF_ERRMEMORY;
+		default: return r = LF_ERRANY;
+	}
+	return r;
+}
+
+
+// Loads script specified in registryindex into lua state
+int LF_loadscript(lua_State *l)
+{
+	lua_pushstring(l, "SCRIPT_FILENAME");
+	lua_rawget(l, LUA_REGISTRYINDEX);
+	char *scriptpath = lua_touserdata(l, 1); 
+	lua_pop(l, 1);
+
+	lua_pushstring(l, "SCRIPT_NAME");
+	lua_rawget(l, LUA_REGISTRYINDEX);
+	char *name = lua_touserdata(l, 1);
+	lua_pop(l, 1);
+
+	return LF_fileload(l, name, scriptpath);
 }
 
 

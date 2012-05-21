@@ -8,6 +8,7 @@ LDFLAGS=-O2 -Wl,-Bstatic -lfcgi -llua5.1 -Wl,-Bdynamic -lm -lpthread
 all: lua-fastcgi
 
 debug: CFLAGS+=-g -DDEBUG
+debug: LDFLAGS+=-lrt
 debug: lua-fastcgi
 
 lua-fastcgi: src/lua-fastcgi.o src/lfuncs.o src/lua.o src/config.o
