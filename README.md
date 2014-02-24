@@ -18,6 +18,11 @@ Ubuntu will likely work without any changes. Other flavors of Linux should
 work with little to no effort. Other Unix-like operating systems are untested
 and unsupported, for now.
 
+To compile lua-fastcgi:
+
+    autoreconf --install
+    ./configure
+    make
 
 running
 -------
