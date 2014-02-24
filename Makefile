@@ -11,7 +11,7 @@ debug: CFLAGS+=-g -DDEBUG
 debug: LDFLAGS+=-lrt
 debug: lua-fastcgi
 
-lua-fastcgi: src/lua-fastcgi.o src/lfuncs.o src/lua.o src/config.o
+lua-fastcgi: src/lua-fastcgi.o src/lfuncs.o src/lua.o src/lfconfig.o
 	$(CC) $^ $(LDFLAGS) -o $@ 
 
 clean:
