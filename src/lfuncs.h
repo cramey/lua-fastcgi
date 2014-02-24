@@ -1,3 +1,6 @@
+#ifndef LFUNCS_H
+#define LFUNCS_H
+
 // Writes FCGI output followed by a carriage return
 int LF_print(lua_State *);
 
@@ -12,3 +15,5 @@ int LF_loadfile(lua_State *);
 
 // dofile() function with sandboxing security measures
 int LF_dofile(lua_State *);
+
+#endif

@@ -1,3 +1,6 @@
+#ifndef LFCONFIG_H
+#define LFCONFIG_H
+
 typedef struct {
 	char *listen;
 	int backlog;
@@ -14,3 +17,5 @@ typedef struct {
 
 LF_config *LF_createconfig();
 int LF_loadconfig(LF_config *, char *);
+
+#endif
