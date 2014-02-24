@@ -12,7 +12,7 @@
 #include <pthread.h>
 
 #include "lua.h"
-#include "config.h"
+#include "lfconfig.h"
 #include "lua-fastcgi.h"
 
 

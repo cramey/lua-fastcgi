@@ -1,3 +1,6 @@
+#ifndef LUA_H
+#define LUA_H
+
 #define LF_ERRNONE     0
 #define LF_ERRANY      1
 #define LF_ERRACCESS   2
@@ -29,3 +32,5 @@ void LF_emptystack(lua_State *);
 int LF_fileload(lua_State *, const char *, char *);
 int LF_loadscript(lua_State *);
 void LF_closestate(lua_State *);
+
+#endif
